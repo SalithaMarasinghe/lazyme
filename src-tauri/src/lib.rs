@@ -1,7 +1,7 @@
 pub mod lifecycle;
 pub mod secrets;
 
-use lifecycle::{decide_action, LifecycleAction, LifecycleEvent, SecretProbe};
+use lifecycle::{decide_event_action, decide_startup_action, LifecycleAction, LifecycleEvent, SecretProbe};
 use secrets::KeyringSecretProbe;
 use serde::Serialize;
 use tauri::{
@@ -18,8 +18,7 @@ pub struct AppStatus {
 
 #[tauri::command]
 fn get_app_status() -> AppStatus {
-    let probe = KeyringSecretProbe;
-    let has_api_key = probe.has_api_key().unwrap_or(false);
+    let has_api_key = KeyringSecretProbe.has_api_key().unwrap_or(false);
     AppStatus { has_api_key }
 }
 
@@ -44,17 +43,18 @@ fn apply_action(app: &AppHandle, action: LifecycleAction) {
     }
 }
 
+fn dispatch_event(app: &AppHandle, event: LifecycleEvent) {
+    apply_action(app, decide_event_action(event));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let probe = KeyringSecretProbe;
-
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let action = decide_action(LifecycleEvent::SecondInstanceLaunched, &KeyringSecretProbe);
-            apply_action(app, action);
+            dispatch_event(app, LifecycleEvent::SecondInstanceLaunched);
         }))
         .invoke_handler(tauri::generate_handler![get_app_status])
-        .setup(move |app| {
+        .setup(|app| {
             let open_item = MenuItem::with_id(app, "open", "Open LazyMe", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
@@ -64,16 +64,8 @@ pub fn run() {
                 .tooltip("LazyMe")
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        let action =
-                            decide_action(LifecycleEvent::TrayOpenClicked, &KeyringSecretProbe);
-                        apply_action(app, action);
-                    }
-                    "quit" => {
-                        let action =
-                            decide_action(LifecycleEvent::TrayQuitClicked, &KeyringSecretProbe);
-                        apply_action(app, action);
-                    }
+                    "open" => dispatch_event(app, LifecycleEvent::TrayOpenClicked),
+                    "quit" => dispatch_event(app, LifecycleEvent::TrayQuitClicked),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -83,9 +75,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let action =
-                            decide_action(LifecycleEvent::TrayOpenClicked, &KeyringSecretProbe);
-                        apply_action(tray.app_handle(), action);
+                        dispatch_event(tray.app_handle(), LifecycleEvent::TrayOpenClicked);
                     }
                 });
 
@@ -94,17 +84,14 @@ pub fn run() {
             }
             tray_builder.build(app)?;
 
-            let initial_action = decide_action(LifecycleEvent::AppStarted, &probe);
-            apply_action(app.handle(), initial_action);
+            apply_action(app.handle(), decide_startup_action(&KeyringSecretProbe));
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
-                    let action =
-                        decide_action(LifecycleEvent::WindowCloseRequested, &KeyringSecretProbe);
-                    apply_action(window.app_handle(), action);
+                    dispatch_event(window.app_handle(), LifecycleEvent::WindowCloseRequested);
                 }
             }
         })
